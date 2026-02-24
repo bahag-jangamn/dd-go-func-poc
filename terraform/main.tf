@@ -4,6 +4,7 @@ locals {
   source_path  = "../function"
 }
 
+// Artifact Registry Repository to store cloud functions images
 resource "google_artifact_registry_repository" "image_repository" {
   location      = var.region
   repository_id = var.service_name
@@ -11,15 +12,18 @@ resource "google_artifact_registry_repository" "image_repository" {
   format        = "DOCKER"
 }
 
+// Retrieve Datadog API key from Secret Manager
 data "google_secret_manager_secret" "dd_api_key" {
   secret_id = "datadog-api-key"
 }
 
+// Retrieve the latest version of the Datadog API key secret
 data "google_secret_manager_secret_version" "dd_api_key_version" {
-  secret = data.google_secret_manager_secret.dd_api_key.id
+  secret  = data.google_secret_manager_secret.dd_api_key.id
   version = "1"
 }
 
+// Archive the function source code, excluding unnecessary files and directories
 data "archive_file" "source" {
   type        = "zip"
   source_dir  = local.source_path
@@ -27,6 +31,7 @@ data "archive_file" "source" {
   excludes    = ["**/.terraform/**", "**/.git/**", "**/out/**"]
 }
 
+// Build and push the Docker image to Artifact Registry using Cloud Build
 resource "terraform_data" "manual_build" {
   triggers_replace = [
     data.archive_file.source.output_sha
@@ -41,6 +46,7 @@ resource "terraform_data" "manual_build" {
   depends_on = [google_artifact_registry_repository.image_repository]
 }
 
+// Deploy the Cloud Run Function with Datadog integration using the Terraform module
 module "my-cloud-run-app" {
   source  = "DataDog/cloud-run-datadog/google"
   version = "~> 1.0"
@@ -52,7 +58,7 @@ module "my-cloud-run-app" {
   datadog_api_key = data.google_secret_manager_secret_version.dd_api_key_version.secret_data
   datadog_service = "dd-go-func-poc"
   datadog_env     = "development"
-  datadog_site = "datadoghq.eu"
+  datadog_site    = "datadoghq.eu"
   datadog_sidecar = {
     env = [
       {
@@ -64,6 +70,7 @@ module "my-cloud-run-app" {
         value = "localhost:4317"
       },
       { name = "DD_SOURCE", value = "go" },
+      { name = "DD_ENV", value = "development" },
     ]
   }
 
