@@ -2,12 +2,13 @@ package go_func_dd_poc
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
-	"net/http"
 	"strconv"
 	"time"
 
 	"github.com/GoogleCloudPlatform/functions-framework-go/functions"
+	"github.com/cloudevents/sdk-go/v2/event"
 	"github.com/sirupsen/logrus"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -30,6 +31,24 @@ var (
 	stockGauge metric.Int64Gauge
 )
 
+type Offer struct {
+	OffeId    string  `json:"offe_id"`
+	Operation string  `json:"operation"`
+	Price     float64 `json:"price"`
+	Stock     int64   `json:"stock"`
+}
+
+type (
+	MessagePublishedData struct {
+		Message PubSubMessage
+	}
+	PubSubMessage struct {
+		Data       []byte            `json:"data"`
+		MessageId  string            `json:"messageId"`
+		Attributes map[string]string `json:"attributes"`
+	}
+)
+
 func init() {
 	setupOTel()
 
@@ -49,32 +68,33 @@ func init() {
 		logrus.Fatal(err)
 	}
 
-	functions.HTTP("HelloWorld", HelloWorld)
+	functions.CloudEvent("HelloWorld", HelloWorld)
 }
 
-func HelloWorld(w http.ResponseWriter, r *http.Request) {
+func HelloWorld(reqCtx context.Context, event event.Event) error {
 	currentPrice := 0.0
 	currentStock := int64(0)
 	currentOfferID := ""
-	ctx, span := tracer.Start(r.Context(), "HandleRequest")
+	ctx, span := tracer.Start(reqCtx, "HandleRequest")
 	defer span.End()
 
-	currentOfferID = r.URL.Query().Get("offerId") // e.g. ?offerId=123
-	operation := r.URL.Query().Get("op")          // e.g. &op=upsert
-	if priceStr := r.URL.Query().Get("price"); priceStr != "" {
-		if p, err := strconv.ParseFloat(priceStr, 64); err == nil {
-			currentPrice = p
-		} else {
-			currentPrice = 100.0
-		}
+	var message MessagePublishedData
+	if err := event.DataAs(&message); err != nil {
+		err = fmt.Errorf("failed to get message from event data: %+v", err)
+		logrus.Error(ctx, err.Error())
+		return err
 	}
-	if stockStr := r.URL.Query().Get("stock"); stockStr != "" {
-		if s, err := strconv.ParseInt(stockStr, 10, 64); err == nil {
-			currentStock = s
-		} else {
-			currentStock = 50
-		}
+	var data Offer
+	if err := json.Unmarshal(message.Message.Data, &data); err != nil {
+		err = fmt.Errorf("failed to unmarshal message data: %+v", err)
+		logrus.Error(ctx, err.Error())
+		return err
 	}
+
+	currentOfferID = data.OffeId
+	operation := data.Operation
+	currentPrice = data.Price
+	currentStock = data.Stock
 
 	status := "success"
 	if currentOfferID != "" {
@@ -93,7 +113,6 @@ func HelloWorld(w http.ResponseWriter, r *http.Request) {
 	requestCounter.Add(ctx, 1, metric.WithAttributes(
 		attribute.String("status", status),
 		attribute.String("operation", operation),
-		attribute.String("path", r.URL.Path),
 	))
 
 	stockGauge.Record(ctx, currentStock, metric.WithAttributes(attribute.String("offerId", currentOfferID)))
@@ -110,7 +129,7 @@ func HelloWorld(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	fmt.Fprintf(w, "Telemetry sent for Offer: %s", currentOfferID)
+	return nil
 }
 
 func setupOTel() {
